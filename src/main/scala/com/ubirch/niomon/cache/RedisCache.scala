@@ -9,9 +9,11 @@ import org.redisson.Redisson
 import org.redisson.api.{RMapCache, RedissonClient}
 import org.redisson.codec.FstCodec
 
+import scala.concurrent.{ExecutionContext, Future}
 import scala.util.Try
 
 class RedisCache(appName: String, appConfig: TConfig) extends StrictLogging {
+
   import RedisCache._
 
   var caches: Vector[RMapCache[_, _]] = Vector()
@@ -41,7 +43,8 @@ class RedisCache(appName: String, appConfig: TConfig) extends StrictLogging {
   // Originally it was just `cached(name)(function)`, but when `shouldCache` parameter was added after the `name`,
   // it screwed up type inference, because it was lexically before the `function`. And it is the `function` that has
   // the correct types for the type inference
-  def cached[F](f: F)(implicit F: TupledFunction[F]) = new CacheBuilder[F, F.TupledInput, F.Output](f) {
+  /** this DOES NOT SUPPORT functions returning futures, for that use cachedF */
+  def cached[F](f: F)(implicit F: TupledFunction[F], ev: DoesNotReturnFuture[F]) = new CacheBuilder[F, F.TupledInput, F.Output](f) {
     override implicit def inputIsI =
     // kinda hackish, but if I do `implicitly`, I get an infinite loop
       =:=.tpEquals[Any].asInstanceOf[tupledFunction.TupledInput =:= F.TupledInput]
@@ -49,6 +52,18 @@ class RedisCache(appName: String, appConfig: TConfig) extends StrictLogging {
     override implicit def outputIsO =
     // kinda hackish, but if I do `implicitly`, I get an infinite loop
       =:=.tpEquals[Any].asInstanceOf[tupledFunction.Output =:= F.Output]
+  }
+
+  /** like cached, but understands Futures */
+  //noinspection TypeAnnotation
+  def cachedF[F](f: F)(implicit F: TupledFunction[F], ev: ReturnsFuture[F]) = new FutureCacheBuilder[F, F.TupledInput, ev.FutureRes](f) {
+    override implicit def inputIsI =
+    // kinda hackish, but if I do `implicitly`, I get an infinite loop
+      =:=.tpEquals[Any].asInstanceOf[tupledFunction.TupledInput =:= F.TupledInput]
+
+    override implicit def outputIsFutureO =
+    // kinda hackish, but if I do `implicitly`, I get an infinite loop
+      =:=.tpEquals[Any].asInstanceOf[tupledFunction.Output =:= Future[ev.FutureRes]]
   }
 
   // I and O are here just to make type inference possible. I == tupledFunction.TupledInput and O == tupledFunction.Output
@@ -98,9 +113,59 @@ class RedisCache(appName: String, appConfig: TConfig) extends StrictLogging {
     }
   }
 
+  // I and O are here just to make type inference possible. I == tupledFunction.TupledInput and O == tupledFunction.Output
+  abstract class FutureCacheBuilder[F, I, O] private[RedisCache](f: F)(implicit val tupledFunction: TupledFunction[F]) {
+    private val tupledF = tupledFunction.tupled(f)
+
+    implicit def inputIsI: tupledFunction.TupledInput =:= I
+
+    implicit def outputIsFutureO: tupledFunction.Output =:= Future[O]
+
+    implicit def futureOIsOutput: Future[O] =:= tupledFunction.Output = outputIsFutureO.asInstanceOf
+
+    // for some reason, this doesn't really work with arbitrary key types, so we always use strings for keys
+    def buildCache(
+      name: String,
+      shouldCache: O => Boolean = { _ => true }
+    )(implicit
+      cacheKey: CacheKey[I],
+      ec: ExecutionContext
+    ): F = {
+      val cache = redisson.getMapCache[String, O](name)
+
+      logger.debug("registering new cache")
+      caches :+= cache
+      logger.debug(s"caches in total: ${caches.size}")
+
+      val ttl = appConfig.getDuration(s"$appName.$name.timeToLive")
+      val maxIdleTime = appConfig.getDuration(s"$appName.$name.maxIdleTime")
+
+      tupledFunction.untupled { x: tupledFunction.TupledInput =>
+        val key = cacheKey.key(x)
+        val res = cache.get(key)
+
+        if (res != null) {
+          logger.debug(s"cache hit in [$name] for key [$key]")
+          Future.successful(res)
+        } else {
+          logger.debug(s"cache miss in [$name] for key [$key]")
+          val freshResF: Future[O] = tupledF(x)
+          freshResF.map { freshRes =>
+            if (shouldCache(freshRes)) {
+              cache.fastPut(key, freshRes, ttl.toNanos, TimeUnit.NANOSECONDS, maxIdleTime.toNanos, TimeUnit.NANOSECONDS)
+            }
+            freshRes
+          }
+        }
+
+      }
+    }
+  }
+
 }
 
 object RedisCache {
+
   trait CacheKey[T] {
     def key(x: T): String
   }
