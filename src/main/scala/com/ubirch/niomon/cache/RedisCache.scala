@@ -11,7 +11,7 @@ import org.redisson.codec.FstCodec
 
 import scala.util.Try
 
-class RedisCache(appConfig: TConfig) extends StrictLogging {
+class RedisCache(appName: String, appConfig: TConfig) extends StrictLogging {
   import RedisCache._
 
   var caches: Vector[RMapCache[_, _]] = Vector()
@@ -72,8 +72,8 @@ class RedisCache(appConfig: TConfig) extends StrictLogging {
       caches :+= cache
       logger.debug(s"caches in total: ${caches.size}")
 
-      val ttl = appConfig.getDuration(s"$name.timeToLive")
-      val maxIdleTime = appConfig.getDuration(s"$name.maxIdleTime")
+      val ttl = appConfig.getDuration(s"$appName.$name.timeToLive")
+      val maxIdleTime = appConfig.getDuration(s"$appName.$name.maxIdleTime")
 
       tupledFunction.untupled { x: tupledFunction.TupledInput =>
         val (res, time) = measureTime {
