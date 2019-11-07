@@ -52,7 +52,7 @@ class RedisCache(appConfig: TConfig) extends StrictLogging {
   }
 
   // I and O are here just to make type inference possible. I == tupledFunction.TupledInput and O == tupledFunction.Output
-  abstract class CacheBuilder[F, I, O] private[NioMicroservice](f: F)(implicit val tupledFunction: TupledFunction[F]) {
+  abstract class CacheBuilder[F, I, O] private[RedisCache](f: F)(implicit val tupledFunction: TupledFunction[F]) {
     private val tupledF = tupledFunction.tupled(f)
 
     implicit def inputIsI: tupledFunction.TupledInput =:= I
