@@ -38,12 +38,12 @@ class RedisCache(appName: String, appConfig: TConfig) extends StrictLogging {
     conf
   })
 
-  //noinspection TypeAnnotation
   // This cache API is split in two steps (`cached(_).buildCache(_)`) to make type inference happy.
   // Originally it was just `cached(name)(function)`, but when `shouldCache` parameter was added after the `name`,
   // it screwed up type inference, because it was lexically before the `function`. And it is the `function` that has
   // the correct types for the type inference
   /** this DOES NOT SUPPORT functions returning futures, for that use cachedF */
+  //noinspection TypeAnnotation
   def cached[F](f: F)(implicit F: TupledFunction[F], ev: DoesNotReturnFuture[F]) = new CacheBuilder[F, F.TupledInput, F.Output](f) {
     override implicit def inputIsI =
     // kinda hackish, but if I do `implicitly`, I get an infinite loop
@@ -114,13 +114,12 @@ class RedisCache(appName: String, appConfig: TConfig) extends StrictLogging {
   }
 
   // I and O are here just to make type inference possible. I == tupledFunction.TupledInput and O == tupledFunction.Output
-  abstract class FutureCacheBuilder[F, I, O] private[RedisCache](f: F)(implicit val tupledFunction: TupledFunction[F]) {
+  abstract class FutureCacheBuilder[F, I, O] private[RedisCache](f: F)(implicit val tupledFunction: TupledFunction[F], val returnsFuture: ReturnsFuture[F]) {
     private val tupledF = tupledFunction.tupled(f)
 
     implicit def inputIsI: tupledFunction.TupledInput =:= I
 
     implicit def outputIsFutureO: tupledFunction.Output =:= Future[O]
-
     implicit def futureOIsOutput: Future[O] =:= tupledFunction.Output = outputIsFutureO.asInstanceOf
 
     // for some reason, this doesn't really work with arbitrary key types, so we always use strings for keys
