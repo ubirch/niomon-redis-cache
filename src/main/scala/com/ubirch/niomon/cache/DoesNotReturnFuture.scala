@@ -16,7 +16,11 @@ object DoesNotReturnFuture {
   @scala.annotation.implicitNotFound("${A} must not be a subtype of ${B}")
   trait <:!<[A, B] extends Serializable
 
-  implicit def nsub[A, B] : A <:!< B = null
-  implicit def nsubAmbig1[A, B >: A] : A <:!< B = sys.error("unreachable")
-  implicit def nsubAmbig2[A, B >: A] : A <:!< B = sys.error("unreachable")
+  object <:!< {
+    implicit def nsub[A, B]: A <:!< B = null
+
+    implicit def nsubAmbig1[A, B >: A]: A <:!< B = sys.error("unreachable")
+
+    implicit def nsubAmbig2[A, B >: A]: A <:!< B = sys.error("unreachable")
+  }
 }
