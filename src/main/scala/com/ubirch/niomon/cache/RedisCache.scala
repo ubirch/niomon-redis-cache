@@ -120,7 +120,7 @@ class RedisCache(appName: String, appConfig: TConfig) extends StrictLogging {
     implicit def inputIsI: tupledFunction.TupledInput =:= I
 
     implicit def outputIsFutureO: tupledFunction.Output =:= Future[O]
-    implicit def futureOIsOutput: Future[O] =:= tupledFunction.Output = outputIsFutureO.asInstanceOf
+    implicit def futureOIsOutput: Future[O] =:= tupledFunction.Output = outputIsFutureO.asInstanceOf[Future[O] =:= tupledFunction.Output]
 
     // for some reason, this doesn't really work with arbitrary key types, so we always use strings for keys
     def buildCache(
