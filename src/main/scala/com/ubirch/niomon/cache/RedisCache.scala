@@ -8,9 +8,11 @@ import org.nustaq.serialization.FSTConfiguration
 import org.redisson.Redisson
 import org.redisson.api.{RMapCache, RedissonClient}
 import org.redisson.codec.FstCodec
+import org.redisson.config.Config
 
 import scala.concurrent.{ExecutionContext, Future}
-import scala.util.Try
+import scala.util.{Failure, Success, Try}
+import scala.collection.JavaConverters._
 
 class RedisCache(appName: String, appConfig: TConfig) extends StrictLogging {
 
@@ -24,19 +26,65 @@ class RedisCache(appName: String, appConfig: TConfig) extends StrictLogging {
     logger.debug(s"cache sizes after purging: [${caches.map(c => c.getName + " => " + c.size()).mkString("; ")}]")
   }
 
-  val redisson: RedissonClient = Redisson.create({
-    val conf = Try(appConfig.getConfig("redisson").root().render(ConfigRenderOptions.concise()))
-      .map(org.redisson.config.Config.fromJSON)
-      .getOrElse(new org.redisson.config.Config())
+  val redisson: RedissonClient = {
+    val redissonSection = appConfig.getConfig("redisson")
+    val isNewConfigFormat = redissonSection.hasPath("main") && redissonSection.hasPath("fallbacks")
 
-    // force the FST serializer to use serialize everything, because we sometimes want to store POJOs which
-    // aren't `Serializable`
-    if (conf.getCodec == null || conf.getCodec.isInstanceOf[FstCodec]) {
-      conf.setCodec(new FstCodec(FSTConfiguration.createDefaultConfiguration().setForceSerializable(true)))
+    val rawConfigsWithNames = if (isNewConfigFormat) {
+      (redissonSection.getConfig("main"), "main") ::
+        redissonSection.getConfigList("fallbacks").asScala.toList.zipWithIndex.map {
+          case (conf, idx) => (conf, s"fallback #$idx")
+        }
+    } else {
+      logger.warn("using legacy redis-cache config format")
+      List((redissonSection, "main-legacy"))
     }
 
-    conf
-  })
+    val redissonConfigsWithNames = rawConfigsWithNames.map { case (rawConfig, name) =>
+      val c = Config.fromJSON(rawConfig.root().render(ConfigRenderOptions.concise()))
+      // force the FST serializer to use serialize everything, because we sometimes want to store POJOs which
+      // aren't `Serializable`
+      if (c.getCodec == null || c.getCodec.isInstanceOf[FstCodec]) {
+        c.setCodec(new FstCodec(FSTConfiguration.createDefaultConfiguration().setForceSerializable(true)))
+      }
+
+      (c, name)
+    }
+
+    var successfullyConnectedRedisson: RedissonClient = null
+    var lastError: Throwable = null
+    val configIterator = redissonConfigsWithNames.iterator
+
+    while (successfullyConnectedRedisson == null && configIterator.hasNext) {
+      val (currentConfig, configName) = configIterator.next()
+      val tryRedisson = Try {
+        logger.debug(s"trying redisson config $configName")
+        val r = Redisson.create(currentConfig)
+        // ask redis about something to prove that this config works
+        val keys = r.getKeys
+        logger.debug(s"connected to redis instance with ${keys.count()} keys")
+
+        r
+      }
+
+      tryRedisson match {
+        case Success(r) =>
+          logger.info(s"successfully connected to redis using config $configName")
+          successfullyConnectedRedisson = r
+        case Failure(exception) =>
+          logger.debug(s"failed to connect to redis using config $configName", exception)
+          lastError = exception
+          logger.debug(s"retrying with next fallback config...")
+      }
+    }
+
+    if (successfullyConnectedRedisson == null) {
+      logger.error(s"tried all the configs, but couldn't connect to redis; last error:", lastError)
+      throw new Exception("No valid config for redis", lastError)
+    }
+
+    successfullyConnectedRedisson
+  }
 
   // This cache API is split in two steps (`cached(_).buildCache(_)`) to make type inference happy.
   // Originally it was just `cached(name)(function)`, but when `shouldCache` parameter was added after the `name`,
@@ -120,6 +168,7 @@ class RedisCache(appName: String, appConfig: TConfig) extends StrictLogging {
     implicit def inputIsI: tupledFunction.TupledInput =:= I
 
     implicit def outputIsFutureO: tupledFunction.Output =:= Future[O]
+
     implicit def futureOIsOutput: Future[O] =:= tupledFunction.Output = outputIsFutureO.asInstanceOf[Future[O] =:= tupledFunction.Output]
 
     // for some reason, this doesn't really work with arbitrary key types, so we always use strings for keys
