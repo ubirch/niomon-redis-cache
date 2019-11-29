@@ -2,7 +2,10 @@ package com.ubirch.niomon.cache
 
 import scala.concurrent.Future
 
-
+/**
+ * Typeclass which is implemented for functions which return [[scala.concurrent.Future]]s.
+ * Currently instances are provided for any function which takes up to four arguments.
+ */
 trait ReturnsFuture[F] {
   type FutureRes
 }
