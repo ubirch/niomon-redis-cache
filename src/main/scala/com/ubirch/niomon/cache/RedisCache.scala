@@ -14,22 +14,40 @@ import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try}
 import scala.collection.JavaConverters._
 
+/**
+ * Implementation of caching for arbitrary functions.
+ * Usage:
+ * {{{
+ * val r = new RedisCache("appName", ConfigFactory.load())
+ * def area(r: Double) = {
+ *   println("computing...")
+ *   i * i * 3.14
+ * }
+ * val areaCached = r.cached(area).buildCache("area-cache")
+ * val a = areaCached(42) // prints "computing..."
+ * val b = areaCached(42) // doesn't print anything
+ * assert(a == b)
+ * }}}
+ */
 class RedisCache(appName: String, appConfig: TConfig) extends StrictLogging {
 
   import RedisCache._
 
   var caches: Vector[RMapCache[_, _]] = Vector()
 
+  /** clears all the caches created by this instance of [[RedisCache]] */
   def purgeCaches(): Unit = {
     logger.info("purging redis caches")
     caches.foreach(_.clear())
     logger.debug(s"cache sizes after purging: [${caches.map(c => c.getName + " => " + c.size()).mkString("; ")}]")
   }
 
+  /** Redisson client configured from application.conf. For example config look at auth microservice */
   val redisson: RedissonClient = {
     val redissonSection = appConfig.getConfig("redisson")
     val isNewConfigFormat = redissonSection.hasPath("main") && redissonSection.hasPath("fallbacks")
 
+    // the new config format allows for main config and a number of fallbacks
     val rawConfigsWithNames = if (isNewConfigFormat) {
       (redissonSection.getConfig("main"), "main") ::
         redissonSection.getConfigList("fallbacks").asScala.toList.zipWithIndex.map {
@@ -51,6 +69,7 @@ class RedisCache(appName: String, appConfig: TConfig) extends StrictLogging {
       (c, name)
     }
 
+    // we try all the configs starting with the main one and return the first successfully connected client
     var successfullyConnectedRedisson: RedissonClient = null
     var lastError: Throwable = null
     val configIterator = redissonConfigsWithNames.iterator
@@ -115,6 +134,7 @@ class RedisCache(appName: String, appConfig: TConfig) extends StrictLogging {
   }
 
   // I and O are here just to make type inference possible. I == tupledFunction.TupledInput and O == tupledFunction.Output
+  // there probably was a cleaner way to do it, but I couldn't figure it out
   abstract class CacheBuilder[F, I, O] private[RedisCache](f: F)(implicit val tupledFunction: TupledFunction[F]) {
     private val tupledF = tupledFunction.tupled(f)
 
@@ -138,6 +158,8 @@ class RedisCache(appName: String, appConfig: TConfig) extends StrictLogging {
       val ttl = appConfig.getDuration(s"$appName.$name.timeToLive")
       val maxIdleTime = appConfig.getDuration(s"$appName.$name.maxIdleTime")
 
+      // this is the actual return value - a closure which takes the parameters as the cached function, but first checks
+      // the `cache` created a few lines earlier
       tupledFunction.untupled { x: tupledFunction.TupledInput =>
         val (res, time) = measureTime {
           val key = cacheKey.key(x)
@@ -161,6 +183,7 @@ class RedisCache(appName: String, appConfig: TConfig) extends StrictLogging {
     }
   }
 
+  /** Like [[CacheBuilder]], but for functions which return futures */
   // I and O are here just to make type inference possible. I == tupledFunction.TupledInput and O == tupledFunction.Output
   abstract class FutureCacheBuilder[F, I, O] private[RedisCache](f: F)(implicit val tupledFunction: TupledFunction[F], val returnsFuture: ReturnsFuture[F]) {
     private val tupledF = tupledFunction.tupled(f)
@@ -205,7 +228,6 @@ class RedisCache(appName: String, appConfig: TConfig) extends StrictLogging {
             freshRes
           }
         }
-
       }
     }
   }
@@ -214,6 +236,10 @@ class RedisCache(appName: String, appConfig: TConfig) extends StrictLogging {
 
 object RedisCache {
 
+  /**
+   * Typeclass which transforms a value of type `T` into a string that will be used as a cache key. `T` is very
+   * often a tuple. There's an implicit default implementation of this for every `T`, which just calls `.toString`
+   */
   trait CacheKey[T] {
     def key(x: T): String
   }

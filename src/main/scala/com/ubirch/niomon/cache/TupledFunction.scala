@@ -1,5 +1,9 @@
 package com.ubirch.niomon.cache
 
+/**
+ * Typeclass for converting between tupled and untupled functions. This allows you to abstract over different arities
+ * of functions. Currently instances are provided for any function which takes up to four arguments.
+ */
 trait TupledFunction[F] {
   type TupledInput
   type Output
