@@ -10,9 +10,9 @@ import org.redisson.api.{RMapCache, RedissonClient}
 import org.redisson.codec.FstCodec
 import org.redisson.config.Config
 
+import scala.collection.JavaConverters._
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try}
-import scala.collection.JavaConverters._
 
 /**
  * Implementation of caching for arbitrary functions.
